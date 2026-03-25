@@ -1,22 +1,18 @@
-# ============================================================
-#  ui.py  –  8-bit HUD panels (time left, score right)
-# ============================================================
+# ui.py
+# Draws both side panels (time on the left, score on the right)
+# and the game-over overlay.
+#
+# The digits are drawn as 7-segment LCD displays, the same style
+# as a calculator or digital clock.
 
 import pygame
-from settings import (
-    WINDOW_WIDTH, WINDOW_HEIGHT, PANEL_WIDTH, BOARD_PX,
-    FONT_TINY, FONT_SMALL, FONT_MEDIUM, FONT_LARGE, FONT_HUGE,
-    C_PANEL_BG, C_PANEL_BORDER,
-    C_LABEL, C_VALUE_AMBER, C_VALUE_DIM,
-    C_WHITE, C_BLACK, C_RED, C_GREEN_BRIGHT,
-    SEG_W, SEG_H, SEG_T, SEG_GAP,
-)
+import sprite_loader as sprites
+import settings as S
 
-# ── 7-segment encoding ─────────────────────────────────────
-#  Segments: a(top) b(top-right) c(bot-right) d(bot)
-#            e(bot-left) f(top-left) g(middle)
-#  Index:      a  b  c  d  e  f  g
-_SEGMENTS: dict[str, tuple[bool, ...]] = {
+
+# Which segments are lit for each digit 0-9.
+# Segment order: top, top-right, bot-right, bottom, bot-left, top-left, middle
+DIGIT_SEGMENTS = {
     "0": (1, 1, 1, 1, 1, 1, 0),
     "1": (0, 1, 1, 0, 0, 0, 0),
     "2": (1, 1, 0, 1, 1, 0, 1),
@@ -27,233 +23,209 @@ _SEGMENTS: dict[str, tuple[bool, ...]] = {
     "7": (1, 1, 1, 0, 0, 0, 0),
     "8": (1, 1, 1, 1, 1, 1, 1),
     "9": (1, 1, 1, 1, 0, 1, 1),
-    ":": (0, 0, 0, 0, 0, 0, 0),   # colon handled separately
-    "-": (0, 0, 0, 0, 0, 0, 1),
 }
 
 
 class UI:
-    """
-    Renders two side panels in a chunky 8-bit style:
-     - Left  panel : elapsed time (MM:SS) with 7-segment digits
-     - Right panel : score + snake length with 7-segment digits
-    Also handles the Game-Over overlay.
-    """
 
-    def __init__(self, surface: pygame.Surface):
-        self.surface = surface
-        self._init_fonts()
+    def __init__(self, surface):
+        self.surface   = surface
+        self._fonts    = _load_fonts()
+        self._scanlines = _make_scanlines(S.PANEL_WIDTH, S.WINDOW_HEIGHT)
 
-        # Pre-build scanline overlay for panels
-        self._scanlines = self._make_scanlines(PANEL_WIDTH, WINDOW_HEIGHT)
+    # ------------------------------------------------------------------
+    # Main draw call — called every frame from main.py
+    # ------------------------------------------------------------------
 
-    # ── public ─────────────────────────────────────────────
-
-    def draw(
-        self,
-        score:    int,
-        elapsed:  float,
-        length:   int,
-        game_over: bool,
-    ) -> None:
-        self._draw_left_panel(elapsed)
-        self._draw_right_panel(score, length)
+    def draw(self, score, elapsed_seconds, length, game_over):
+        self._draw_panel(side="left")
+        self._draw_panel(side="right")
+        self._draw_time(elapsed_seconds)
+        self._draw_score(score, length)
         if game_over:
-            self._draw_game_over_overlay(score)
+            self._draw_game_over(score)
 
-    # ── panels ─────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Panels
+    # ------------------------------------------------------------------
 
-    def _draw_left_panel(self, elapsed: float) -> None:
-        rect = pygame.Rect(0, 0, PANEL_WIDTH, WINDOW_HEIGHT)
-        pygame.draw.rect(self.surface, C_PANEL_BG, rect)
-        self._draw_pixel_frame(rect)
-        self.surface.blit(self._scanlines, rect.topleft)
+    def _draw_panel(self, side):
+        x = 0 if side == "left" else S.PANEL_WIDTH + S.BOARD_PX
+        rect = pygame.Rect(x, 0, S.PANEL_WIDTH, S.WINDOW_HEIGHT)
 
-        cx = PANEL_WIDTH // 2
+        spr = sprites.images.get("panel")
+        if spr:
+            self.surface.blit(spr, rect.topleft)
+        else:
+            pygame.draw.rect(self.surface, S.PANEL_BG, rect)
+            self.surface.blit(self._scanlines, rect.topleft)
 
-        # ── label ──
-        self._blit_label("T I M E", cx, 30)
+        # Border + four amber corner squares
+        pygame.draw.rect(self.surface, S.PANEL_BORDER, rect, 2)
+        dot = 5
+        for fx, fy in [(x+4, 4), (x+S.PANEL_WIDTH-4-dot, 4),
+                       (x+4, S.WINDOW_HEIGHT-4-dot), (x+S.PANEL_WIDTH-4-dot, S.WINDOW_HEIGHT-4-dot)]:
+            pygame.draw.rect(self.surface, S.TEXT_AMBER, (fx, fy, dot, dot))
 
-        # ── 7-seg time ──
-        total_s = int(elapsed)
-        mm      = total_s // 60
-        ss      = total_s % 60
-        time_str = f"{mm:02d}:{ss:02d}"
-        self._draw_7seg_string(time_str, cx, 75)
+    def _draw_time(self, elapsed_seconds):
+        cx = S.PANEL_WIDTH // 2
+        self._label("T I M E", cx, 30)
+        total = int(elapsed_seconds)
+        self._seven_seg(f"{total // 60:02d}:{total % 60:02d}", cx, 75)
+        self._draw_snake_doodle(cx, 220)
+        self._small_label("WASD TO MOVE", cx, S.WINDOW_HEIGHT - 30, bottom=True)
 
-        # ── decorative snake icon ──
-        self._draw_mini_snake(cx, 220)
+    def _draw_score(self, score, length):
+        cx = S.PANEL_WIDTH + S.BOARD_PX + S.PANEL_WIDTH // 2
+        self._label("S C O R E", cx, 30)
+        self._seven_seg(f"{score:03d}", cx, 75)
+        self._label("L E N G T H", cx, 195)
+        self._seven_seg(f"{length:03d}", cx, 235)
+        self._small_label("EAT APPLES!", cx, S.WINDOW_HEIGHT - 30, bottom=True)
 
-        # ── hint ──
-        self._blit_tiny("ARROWS TO MOVE", cx, WINDOW_HEIGHT - 30)
+    # ------------------------------------------------------------------
+    # Game-over overlay
+    # ------------------------------------------------------------------
 
-    def _draw_right_panel(self, score: int, length: int) -> None:
-        board_right = PANEL_WIDTH + BOARD_PX
-        rect = pygame.Rect(board_right, 0, PANEL_WIDTH, WINDOW_HEIGHT)
-        pygame.draw.rect(self.surface, C_PANEL_BG, rect)
-        self._draw_pixel_frame(rect)
-        self.surface.blit(self._scanlines, rect.topleft, area=pygame.Rect(0, 0, PANEL_WIDTH, WINDOW_HEIGHT))
-
-        cx = board_right + PANEL_WIDTH // 2
-
-        # ── Score ──
-        self._blit_label("S C O R E", cx, 30)
-        self._draw_7seg_string(str(score).zfill(3), cx, 75)
-
-        # ── Length ──
-        self._blit_label("L E N G T H", cx, 195)
-        self._draw_7seg_string(str(length).zfill(3), cx, 235)
-
-        # ── hint ──
-        self._blit_tiny("EAT APPLES!", cx, WINDOW_HEIGHT - 30)
-
-    # ── game over overlay ──────────────────────────────────
-
-    def _draw_game_over_overlay(self, score: int) -> None:
-        overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+    def _draw_game_over(self, score):
+        # Dim the whole screen
+        overlay = pygame.Surface((S.WINDOW_WIDTH, S.WINDOW_HEIGHT), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 190))
         self.surface.blit(overlay, (0, 0))
 
-        cx = WINDOW_WIDTH // 2
-        cy = WINDOW_HEIGHT // 2
+        cx = S.WINDOW_WIDTH  // 2
+        cy = S.WINDOW_HEIGHT // 2
 
-        # Outer box
+        # Dark box with amber border
         box = pygame.Rect(cx - 180, cy - 110, 360, 220)
-        pygame.draw.rect(self.surface, (20, 20, 20), box, border_radius=8)
-        pygame.draw.rect(self.surface, C_VALUE_AMBER, box, 3, border_radius=8)
+        pygame.draw.rect(self.surface, (20, 20, 20),   box, border_radius=8)
+        pygame.draw.rect(self.surface, S.TEXT_AMBER,   box, 3, border_radius=8)
 
-        # "GAME OVER" header
-        go_surf = self._font_large.render("GAME  OVER", True, C_RED)
-        self.surface.blit(go_surf, go_surf.get_rect(centerx=cx, top=cy - 95))
+        self._render("GAME  OVER",          self._fonts["large"], S.TEXT_RED,   cx, cy - 95)
+        self._render(f"SCORE : {score}",    self._fonts["mid"],   S.TEXT_AMBER, cx, cy - 30)
+        self._render("PRESS  R  TO  RESTART", self._fonts["med"], S.TEXT_WHITE, cx, cy + 40)
+        self._render("ESC  TO  QUIT",        self._fonts["small"], S.TEXT_DIM,  cx, cy + 80)
 
-        # Score line
-        s_surf = self._font_med.render(f"SCORE : {score}", True, C_VALUE_AMBER)
-        self.surface.blit(s_surf, s_surf.get_rect(centerx=cx, top=cy - 30))
+    # ------------------------------------------------------------------
+    # 7-segment display
+    # ------------------------------------------------------------------
 
-        # Restart hint (blinking is handled by alpha oscillation)
-        r_surf = self._font_small.render("PRESS  R  TO  RESTART", True, C_WHITE)
-        self.surface.blit(r_surf, r_surf.get_rect(centerx=cx, top=cy + 40))
-
-        # Quit hint
-        q_surf = self._font_tiny.render("ESC  TO  QUIT", True, C_LABEL)
-        self.surface.blit(q_surf, q_surf.get_rect(centerx=cx, top=cy + 80))
-
-    # ── 7-segment display ──────────────────────────────────
-
-    def _draw_7seg_string(self, text: str, cx: int, top: int) -> None:
-        """Render a string of digits (and colons) as a 7-segment display."""
-        # Calculate total width
+    def _seven_seg(self, text, cx, top):
+        """
+        Render a string of digits and colons as a 7-segment LCD display.
+        Each digit is S.SEG_DIGIT_W wide; colons take up 10px.
+        """
+        # Work out total width so we can centre it
         total_w = 0
         for ch in text:
-            if ch == ":":
-                total_w += 10 + SEG_GAP
-            else:
-                total_w += SEG_W + SEG_GAP
-        total_w -= SEG_GAP
-        x = cx - total_w // 2
+            total_w += 10 if ch == ":" else S.SEG_DIGIT_W
+            total_w += S.SEG_GAP
+        total_w -= S.SEG_GAP
 
+        x = cx - total_w // 2
         for ch in text:
             if ch == ":":
                 self._draw_colon(x, top)
-                x += 10 + SEG_GAP
+                x += 10 + S.SEG_GAP
             else:
                 self._draw_digit(ch, x, top)
-                x += SEG_W + SEG_GAP
+                x += S.SEG_DIGIT_W + S.SEG_GAP
 
-    def _draw_digit(self, ch: str, x: int, y: int) -> None:
-        segs = _SEGMENTS.get(ch, (0,)*7)
-        w, h, t = SEG_W, SEG_H, SEG_T
-        hw = w // 2
-        hh = h // 2
+    def _draw_digit(self, ch, x, y):
+        W = S.SEG_DIGIT_W
+        H = S.SEG_DIGIT_H
+        T = S.SEG_BAR_T
+        half = H // 2
+        lit  = DIGIT_SEGMENTS.get(ch, (0,)*7)
 
-        # All 7 segment positions as (rect, on_flag)
-        seg_rects = [
-            # a – top horizontal
-            (pygame.Rect(x + t,      y,          w - 2*t, t),    segs[0]),
-            # b – top-right vertical
-            (pygame.Rect(x + w - t,  y + t,      t,  hh - t),   segs[1]),
-            # c – bot-right vertical
-            (pygame.Rect(x + w - t,  y + hh,     t,  hh - t),   segs[2]),
-            # d – bottom horizontal
-            (pygame.Rect(x + t,      y + h - t,  w - 2*t, t),   segs[3]),
-            # e – bot-left vertical
-            (pygame.Rect(x,          y + hh,     t,  hh - t),   segs[4]),
-            # f – top-left vertical
-            (pygame.Rect(x,          y + t,      t,  hh - t),   segs[5]),
-            # g – middle horizontal
-            (pygame.Rect(x + t,      y + hh - t//2, w - 2*t, t), segs[6]),
+        # Each entry is (pygame.Rect, segment_index)
+        bars = [
+            (pygame.Rect(x+T,   y,        W-T*2, T),    0),  # top
+            (pygame.Rect(x+W-T, y+T,      T,  half-T),  1),  # top-right
+            (pygame.Rect(x+W-T, y+half,   T,  half-T),  2),  # bot-right
+            (pygame.Rect(x+T,   y+H-T,    W-T*2, T),    3),  # bottom
+            (pygame.Rect(x,     y+half,   T,  half-T),  4),  # bot-left
+            (pygame.Rect(x,     y+T,      T,  half-T),  5),  # top-left
+            (pygame.Rect(x+T,   y+half-T//2, W-T*2, T), 6),  # middle
         ]
-        for rect, on in seg_rects:
-            colour = C_VALUE_AMBER if on else C_VALUE_DIM
+        for rect, seg_index in bars:
+            colour = S.TEXT_AMBER if lit[seg_index] else S.TEXT_UNLIT
             pygame.draw.rect(self.surface, colour, rect, border_radius=2)
 
-    def _draw_colon(self, x: int, y: int) -> None:
-        t = SEG_T
-        h = SEG_H
-        dot1 = pygame.Rect(x + 1, y + h // 3 - t, t + 2, t + 2)
-        dot2 = pygame.Rect(x + 1, y + 2 * h // 3, t + 2, t + 2)
-        pygame.draw.rect(self.surface, C_VALUE_AMBER, dot1, border_radius=1)
-        pygame.draw.rect(self.surface, C_VALUE_AMBER, dot2, border_radius=1)
+    def _draw_colon(self, x, y):
+        dot_size = S.SEG_BAR_T + 2
+        pygame.draw.rect(self.surface, S.TEXT_AMBER,
+                         (x+1, y + S.SEG_DIGIT_H//3 - S.SEG_BAR_T, dot_size, dot_size), border_radius=1)
+        pygame.draw.rect(self.surface, S.TEXT_AMBER,
+                         (x+1, y + 2*S.SEG_DIGIT_H//3,              dot_size, dot_size), border_radius=1)
 
-    # ── decorative mini snake ──────────────────────────────
+    # ------------------------------------------------------------------
+    # Decorative snake doodle (left panel)
+    # ------------------------------------------------------------------
 
-    def _draw_mini_snake(self, cx: int, cy: int) -> None:
-        """Draw a tiny pixel-art snake icon in the left panel."""
+    def _draw_snake_doodle(self, cx, cy):
+        """A tiny pixel snake drawn in the left panel as decoration."""
         tile = 10
-        segs = [(0,0),(1,0),(2,0),(2,1),(2,2),(1,2),(0,2)]
-        ox = cx - (3 * tile) // 2
-        for i, (sc, sr) in enumerate(segs):
-            t = i / max(len(segs) - 1, 1)
-            r = int(34  + (74  - 34)  * t)
-            g = int(197 + (222 - 197) * t)
-            b = int(94  + (128 - 94)  * t)
-            rect = pygame.Rect(ox + sc * tile + 1, cy + sr * tile + 1, tile - 2, tile - 2)
-            pygame.draw.rect(self.surface, (r, g, b), rect, border_radius=2)
+        # Each tuple is a (col, row) in a 3x3 micro-grid
+        path = [(0,0), (1,0), (2,0), (2,1), (2,2), (1,2), (0,2)]
+        ox   = cx - (3 * tile) // 2
+        for i, (sc, sr) in enumerate(path):
+            t = i / max(len(path) - 1, 1)
+            colour = _lerp(S.SNAKE_HEAD, S.SNAKE_BODY, t)
+            rect   = pygame.Rect(ox + sc*tile + 1, cy + sr*tile + 1, tile-2, tile-2)
+            pygame.draw.rect(self.surface, colour, rect, border_radius=2)
 
-    # ── frame / scanlines ──────────────────────────────────
+    # ------------------------------------------------------------------
+    # Text helpers
+    # ------------------------------------------------------------------
 
-    def _draw_pixel_frame(self, rect: pygame.Rect) -> None:
-        """Draw a chunky pixel-art border around a panel rect."""
-        pygame.draw.rect(self.surface, C_PANEL_BORDER, rect, 2)
-        # Corner pixel accents
-        s = 5
-        for fx, fy in [
-            (rect.left + 4,       rect.top + 4),
-            (rect.right - 4 - s,  rect.top + 4),
-            (rect.left + 4,       rect.bottom - 4 - s),
-            (rect.right - 4 - s,  rect.bottom - 4 - s),
-        ]:
-            pygame.draw.rect(self.surface, C_VALUE_AMBER, (fx, fy, s, s))
-
-    @staticmethod
-    def _make_scanlines(w: int, h: int) -> pygame.Surface:
-        surf = pygame.Surface((w, h), pygame.SRCALPHA)
-        for y in range(0, h, 4):
-            pygame.draw.line(surf, (0, 0, 0, 35), (0, y), (w, y))
-        return surf
-
-    # ── text helpers ───────────────────────────────────────
-
-    def _blit_label(self, text: str, cx: int, top: int) -> None:
-        surf = self._font_small.render(text, True, C_LABEL)
+    def _label(self, text, cx, top):
+        surf = self._fonts["med"].render(text, True, S.TEXT_DIM)
         self.surface.blit(surf, surf.get_rect(centerx=cx, top=top))
 
-    def _blit_tiny(self, text: str, cx: int, bottom: int) -> None:
-        surf = self._font_tiny.render(text, True, C_LABEL)
-        self.surface.blit(surf, surf.get_rect(centerx=cx, bottom=bottom))
+    def _small_label(self, text, cx, y, bottom=False):
+        surf = self._fonts["small"].render(text, True, S.TEXT_DIM)
+        rect = surf.get_rect(centerx=cx)
+        if bottom:
+            rect.bottom = y
+        else:
+            rect.top = y
+        self.surface.blit(surf, rect)
 
-    # ── font init ──────────────────────────────────────────
+    def _render(self, text, font, colour, cx, top):
+        surf = font.render(text, True, colour)
+        self.surface.blit(surf, surf.get_rect(centerx=cx, top=top))
 
-    def _init_fonts(self) -> None:
-        candidates = ["courier new", "courier", "monospace", "consolas", "lucidaconsole"]
-        def load(size: int) -> pygame.font.Font:
-            for name in candidates:
-                f = pygame.font.SysFont(name, size, bold=True)
-                if f:
-                    return f
-            return pygame.font.Font(None, size)
 
-        self._font_tiny  = load(FONT_TINY)
-        self._font_small = load(FONT_SMALL)
-        self._font_med   = load(FONT_MEDIUM)
-        self._font_large = load(FONT_LARGE)
+# ---------------------------------------------------------------------------
+# Module-level helpers
+# ---------------------------------------------------------------------------
+
+def _load_fonts():
+    """Try to load a monospace font; fall back to pygame's built-in."""
+    candidates = ["courier new", "courier", "consolas", "monospace"]
+    def get(size):
+        for name in candidates:
+            f = pygame.font.SysFont(name, size, bold=True)
+            if f:
+                return f
+        return pygame.font.Font(None, size)
+
+    return {
+        "small": get(S.FONT_SMALL),
+        "med":   get(S.FONT_MEDIUM),
+        "mid":   get(S.FONT_LARGE),
+        "large": get(S.FONT_XLARGE),
+    }
+
+
+def _make_scanlines(width, height):
+    """A transparent surface with faint horizontal lines every 4 pixels."""
+    surf = pygame.Surface((width, height), pygame.SRCALPHA)
+    for y in range(0, height, 4):
+        pygame.draw.line(surf, (0, 0, 0, 35), (0, y), (width, y))
+    return surf
+
+
+def _lerp(c1, c2, t):
+    return tuple(int(a + (b - a) * t) for a, b in zip(c1, c2))
