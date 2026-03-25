@@ -1,86 +1,62 @@
-# ============================================================
-#  apple.py  –  Apple: random spawning and rendering
-# ============================================================
+# apple.py
+# Handles apple spawning and drawing.
+# The apple bobs up and down slightly using a sine wave animation.
 
 import random
 import math
 import pygame
-from settings import (
-    TILE_SIZE, GRID_SIZE,
-    C_APPLE, C_APPLE_DARK, C_APPLE_SHINE, C_STEM, C_LEAF,
-)
+import sprite_loader as sprites
+import settings as S
 
 
 class Apple:
-    """
-    Manages a single apple that spawns on an empty tile and
-    is drawn with a small pixel-art icon.
-    """
 
     def __init__(self):
-        self.position: tuple[int, int] | None = None
-        self._bob_timer: float = 0.0   # animation accumulator
+        self.position  = None  # (col, row) grid tile, or None if not yet spawned
+        self._bob_time = 0.0   # accumulates real time to drive the bobbing
 
-    # ── public ─────────────────────────────────────────────
+    def spawn(self, occupied_tiles):
+        """Place the apple on a random tile that the snake isn't on."""
+        all_tiles = {(c, r) for c in range(S.GRID_SIZE) for r in range(S.GRID_SIZE)}
+        free_tiles = list(all_tiles - occupied_tiles)
+        self.position = random.choice(free_tiles) if free_tiles else None
 
-    def spawn(self, occupied: set[tuple[int, int]]) -> None:
-        """Place the apple on a random tile not occupied by the snake."""
-        all_tiles = {
-            (c, r) for c in range(GRID_SIZE) for r in range(GRID_SIZE)
-        }
-        available = list(all_tiles - occupied)
-        if available:
-            self.position = random.choice(available)
-        else:
-            self.position = None   # board is completely full – shouldn't happen
+    def update(self, dt):
+        self._bob_time += dt
 
-    def update(self, dt: float) -> None:
-        """Advance the idle bobbing animation."""
-        self._bob_timer += dt
-
-    def draw(self, surface: pygame.Surface, ox: int, oy: int) -> None:
+    def draw(self, surface, ox, oy):
         if self.position is None:
             return
 
         col, row = self.position
-        # Centre of this tile in screen-space
-        cx = ox + col * TILE_SIZE + TILE_SIZE // 2
-        cy = oy + row * TILE_SIZE + TILE_SIZE // 2
+        x = ox + col * S.TILE_SIZE
+        y = oy + row * S.TILE_SIZE
 
-        # Gentle sine-wave bob (±2 px)
-        bob = int(math.sin(self._bob_timer * 3.0) * 2)
-        cy += bob
+        # ±2 pixel vertical bob
+        bob = int(math.sin(self._bob_time * 3.0) * 2)
 
-        self._draw_apple(surface, cx, cy)
-
-    # ── private ────────────────────────────────────────────
+        spr = sprites.images.get("apple")
+        if spr:
+            surface.blit(spr, (x, y + bob))
+        else:
+            self._draw_plain(surface, x + S.TILE_SIZE // 2, y + S.TILE_SIZE // 2 + bob)
 
     @staticmethod
-    def _draw_apple(surface: pygame.Surface, cx: int, cy: int) -> None:
-        r = TILE_SIZE // 2 - 5          # main body radius
+    def _draw_plain(surface, cx, cy):
+        """Fallback: draw the apple procedurally when no sprite is loaded."""
+        r = S.TILE_SIZE // 2 - 5
 
-        # Shadow
-        shadow_surf = pygame.Surface((r * 2 + 4, 8), pygame.SRCALPHA)
-        pygame.draw.ellipse(shadow_surf, (0, 0, 0, 60), shadow_surf.get_rect())
-        surface.blit(shadow_surf, (cx - r - 2, cy + r - 2))
+        # Drop shadow
+        shadow = pygame.Surface((r*2 + 4, 8), pygame.SRCALPHA)
+        pygame.draw.ellipse(shadow, (0, 0, 0, 60), shadow.get_rect())
+        surface.blit(shadow, (cx - r - 2, cy + r - 2))
 
-        # Main body
-        pygame.draw.circle(surface, C_APPLE_DARK, (cx, cy), r)
-        pygame.draw.circle(surface, C_APPLE,      (cx, cy), r - 2)
+        pygame.draw.circle(surface, S.APPLE_DARK,  (cx, cy), r)
+        pygame.draw.circle(surface, S.APPLE_RED,   (cx, cy), r - 2)
+        pygame.draw.circle(surface, S.APPLE_SHINE, (cx - r//3, cy - r//3), r // 4)
 
-        # Highlight shine
-        pygame.draw.circle(surface, C_APPLE_SHINE, (cx - r // 3, cy - r // 3), r // 4)
+        pygame.draw.rect(surface, S.APPLE_STEM, (cx - 1, cy - r - 5, 3, 6), border_radius=1)
 
-        # Stem (small brown rectangle)
-        stem_rect = pygame.Rect(cx - 1, cy - r - 5, 3, 6)
-        pygame.draw.rect(surface, C_STEM, stem_rect, border_radius=1)
-
-        # Leaf (tiny rotated ellipse approximated as a filled polygon)
         lx, ly = cx + 4, cy - r - 3
-        leaf_pts = [
-            (lx,     ly    ),
-            (lx + 6, ly - 3),
-            (lx + 8, ly    ),
-            (lx + 4, ly + 2),
-        ]
-        pygame.draw.polygon(surface, C_LEAF, leaf_pts)
+        pygame.draw.polygon(surface, S.APPLE_LEAF,
+                            [(lx, ly), (lx+6, ly-3), (lx+8, ly), (lx+4, ly+2)])
